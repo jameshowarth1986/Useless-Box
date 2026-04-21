@@ -1,41 +1,69 @@
 #include <ESP32Servo.h>
 
-Servo myservo;  // create servo object to control a servo
-// twelve servo objects can be created on most boards
+Servo myservo; 
 
-int pos = 0;    // variable to store the servo position
-static const int servoPin = 14;
-int switchPin = 15; // Define the pin for the switch
-int switchState = 0; // Variable to store the switch state
-int previousSwitchState = 0; // Variable to store the previous switch state
-int servoPositionDown = 40;
-int servoPositionUp = 140;
+// Configuration
+static const int servoPin = 14;   // PWM pin for Servo
+int switchPin = 15;              // Pin for the toggle switch
+int pos = 0;                     // Variable to store the servo position
+
+// Calibration - Adjust these values based on your box's physical limits
+int servoPositionDown = 40;      // Resting position inside the box
+int servoPositionUp = 140;       // Position required to flip the switch
+
+int switchState = 0; 
+int previousSwitchState = 0; 
 
 void setup() {
-  myservo.attach(servoPin);  // attaches the servo on pin 9
-  pinMode(switchPin, INPUT_PULLUP); // Set the switch pin as an input with pull-up resistor
-  myservo.write(servoPositionDown); // Initialize the servo to the center position (adjust as needed) 
+  // Allow the power to stabilize
+  delay(500);
+  
+  // ESP32Servo library setup
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  myservo.setPeriodHertz(50);    // Standard 50hz servo
+  
+  myservo.attach(servoPin, 500, 2400); // Standard min/max pulses for MG996R
+  
+  pinMode(switchPin, INPUT_PULLUP); 
+  
+  // Start in the hidden position
+  myservo.write(servoPositionDown); 
+  Serial.begin(115200);
 }
 
 void loop() {
-  // Read the state of the switch.  The pull-up resistor means it reads HIGH when open, LOW when closed.
+  // Read the state of the switch (LOW = Pressed/On because of INPUT_PULLUP)
   switchState = digitalRead(switchPin);
 
+  // TRIGGER: Switch is turned ON
   if (switchState == LOW && previousSwitchState == HIGH) {
-    delay(100); // Small delay for debouncing
-    // goes from down position to up degrees
-    for (pos = servoPositionDown; pos <= servoPositionUp; pos += 1) {
-      myservo.write(pos);    // tell servo to go to position in variable 'pos'
-      delay(10);               // waits 15ms for the servo to reach the position
+    delay(50); // Debounce
+    
+    Serial.println("Switch flipped! Reacting...");
+
+    // Attack: Move to flip the switch
+    // The MG996R is heavy, so we use a loop to control speed
+    for (pos = servoPositionDown; pos <= servoPositionUp; pos += 2) {
+      myservo.write(pos);
+      delay(10); // Decrease this delay to make the arm "angry"/faster
     }
+    
+    // Brief pause at the top to ensure the click happens
+    delay(100);
   }
   
+  // RETREAT: Once the switch is back to HIGH (Off), go back inside
   if (switchState == HIGH && previousSwitchState == LOW) {
-    // goes from 180 degrees to 0 degrees
-    for (pos = servoPositionUp; pos >= servoPositionDown; pos -= 1) {
-      myservo.write(pos);    // tell servo to go to position in variable 'pos'
-      delay(15);               // waits 15ms for the servo to reach the position
+    Serial.println("Mission accomplished. Retracting.");
+    
+    for (pos = servoPositionUp; pos >= servoPositionDown; pos -= 2) {
+      myservo.write(pos);
+      delay(15); // Slower retreat looks more "satisfied"
     }
   }
-  previousSwitchState = switchState; // Update the previous switch state
+
+  previousSwitchState = switchState;
 }
