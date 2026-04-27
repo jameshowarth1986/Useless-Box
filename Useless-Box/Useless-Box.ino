@@ -9,7 +9,8 @@ int pos = 0;                     // Variable to store the servo position
 
 // Calibration - Adjust these values based on your box's physical limits
 int servoPositionDown = 40;      // Resting position inside the box
-int servoPositionUp = 140;       // Position required to flip the switch
+int servoPositionMiddle = 80;
+int servoPositionUp = 135;       // Position required to flip the switch
 
 int switchState = 0; 
 int previousSwitchState = 0; 
@@ -30,7 +31,7 @@ void setup() {
   pinMode(switchPin, INPUT_PULLUP); 
   
   // Start in the hidden position
-  myservo.write(servoPositionDown); 
+  myservo.write(servoPositionMiddle); 
   Serial.begin(115200);
 }
 
@@ -39,7 +40,7 @@ void loop() {
   switchState = digitalRead(switchPin);
 
   // TRIGGER: Switch is turned ON
-  if (switchState == LOW && previousSwitchState == HIGH) {
+  if (switchState == HIGH && previousSwitchState == LOW) {
     delay(50); // Debounce
     
     Serial.println("Switch flipped! Reacting...");
@@ -56,7 +57,7 @@ void loop() {
   }
   
   // RETREAT: Once the switch is back to HIGH (Off), go back inside
-  if (switchState == HIGH && previousSwitchState == LOW) {
+  if (switchState == LOW && previousSwitchState == HIGH) {
     Serial.println("Mission accomplished. Retracting.");
     
     for (pos = servoPositionUp; pos >= servoPositionDown; pos -= 2) {
