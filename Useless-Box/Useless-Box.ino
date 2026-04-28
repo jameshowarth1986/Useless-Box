@@ -1,70 +1,95 @@
 #include <ESP32Servo.h>
 
-Servo myservo; 
+Servo myservo;
 
 // Configuration
-static const int servoPin = 14;   // PWM pin for Servo
-int switchPin = 15;              // Pin for the toggle switch
-int pos = 0;                     // Variable to store the servo position
+static const int servoPin = 14;
+static const int switchPin = 15;
 
-// Calibration - Adjust these values based on your box's physical limits
-int servoPositionDown = 40;      // Resting position inside the box
-int servoPositionMiddle = 80;
-int servoPositionUp = 135;       // Position required to flip the switch
+// Calibration
+int servoPositionDown = 40;
+int servoPositionMiddle = 70;
+int servoPositionUp = 135;
 
-int switchState = 0; 
-int previousSwitchState = 0; 
+// Volatile variables are required for interrupts
+volatile bool switchChanged = false;
+volatile int currentTargetState = HIGH;
+
+void IRAM_ATTR handleSwitchInterrupt() {
+  // Read the physical pin state
+  currentTargetState = digitalRead(switchPin);
+  // Signal the main loop that we need to change direction
+  switchChanged = true;
+}
 
 void setup() {
-  // Allow the power to stabilize
   delay(500);
   
-  // ESP32Servo library setup
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2);
   ESP32PWM::allocateTimer(3);
-  myservo.setPeriodHertz(50);    // Standard 50hz servo
   
-  myservo.attach(servoPin, 500, 2400); // Standard min/max pulses for MG996R
+  myservo.setPeriodHertz(50);
+  myservo.attach(servoPin, 500, 2400);
   
-  pinMode(switchPin, INPUT_PULLUP); 
+  // Set up the switch with a Pull-Up
+  pinMode(switchPin, INPUT_PULLUP);
   
-  // Start in the hidden position
-  myservo.write(servoPositionMiddle); 
+  // Attach the interrupt to trigger on ANY change (Low to High or High to Low)
+  attachInterrupt(digitalPinToInterrupt(switchPin), handleSwitchInterrupt, CHANGE);
+
+  myservo.write(servoPositionDown);
   Serial.begin(115200);
+  Serial.println("Interrupt System Initialized.");
+}
+
+// Function to move the servo with "Interrupt Awareness"
+void moveServo(int start, int end, int stepDelay) {
+  // Prevent jitter if we are already at or very close to the destination
+  if (abs(start - end) <= 2) {
+    myservo.write(end);
+    return;
+  }
+
+  int step = (start < end) ? 2 : -2;
+  
+  for (int p = start; (step > 0 ? p <= end : p >= end); p += step) {
+    // If the interrupt flag is set, we stop this movement immediately
+    if (switchChanged) {
+      switchChanged = false; // Reset the flag
+      return; 
+    }
+    
+    myservo.write(p);
+    delay(stepDelay);
+  }
+  
+  // Final set to target to ensure precision
+  myservo.write(end);
 }
 
 void loop() {
-  // Read the state of the switch (LOW = Pressed/On because of INPUT_PULLUP)
-  switchState = digitalRead(switchPin);
+  int currentState = digitalRead(switchPin);
+  int currentPos = myservo.read();
 
-  // TRIGGER: Switch is turned ON
-  if (switchState == HIGH && previousSwitchState == LOW) {
-    delay(50); // Debounce
-    
-    Serial.println("Switch flipped! Reacting...");
-
-    // Attack: Move to flip the switch
-    // The MG996R is heavy, so we use a loop to control speed
-    for (pos = servoPositionDown; pos <= servoPositionUp; pos += 2) {
-      myservo.write(pos);
-      delay(10); // Decrease this delay to make the arm "angry"/faster
+  // If the switch is ON (HIGH)
+  if (currentState == HIGH) {
+    // Only move if we aren't already at the 'Up' position
+    if (currentPos < servoPositionUp - 2) {
+      Serial.println("Switch is ON - Attacking");
+      moveServo(currentPos, servoPositionUp, 10);
     }
-    
-    // Brief pause at the top to ensure the click happens
-    delay(100);
-  }
-  
-  // RETREAT: Once the switch is back to HIGH (Off), go back inside
-  if (switchState == LOW && previousSwitchState == HIGH) {
-    Serial.println("Mission accomplished. Retracting.");
-    
-    for (pos = servoPositionUp; pos >= servoPositionDown; pos -= 2) {
-      myservo.write(pos);
-      delay(15); // Slower retreat looks more "satisfied"
+  } 
+  // If the switch is OFF (LOW)
+  else {
+    // Only move if we aren't already at the 'Down' position
+    if (currentPos > servoPositionDown + 2) {
+      Serial.println("Switch is OFF - Retracting");
+      moveServo(currentPos, servoPositionDown, 15);
     }
   }
 
-  previousSwitchState = switchState;
+  // Small delay to prevent the loop from hammering the CPU
+  delay(20);
 }
