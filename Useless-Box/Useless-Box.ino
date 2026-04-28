@@ -11,19 +11,58 @@ int servoPositionDown = 40;
 int servoPositionMiddle = 70;
 int servoPositionUp = 135;
 
-// Volatile variables are required for interrupts
+// --- PERSONALITY SYSTEM ---
+// Structure: {ReactionDelay, AttackSpeed, RetreatSpeed}
+const int NUM_PROFILES = 6;
+int currentProfileIndex = 0;
+
+const int profiles[NUM_PROFILES][3] = {
+  {50, 3, 5},     // 0: The Aggressive (Instant reaction, super fast)
+  {1500, 15, 25}, // 1: The Lazy (Waits a long time, moves slowly)
+  {300, 8, 10},   // 2: The Normal (Standard behavior)
+  {50, 60, 5},     // 3: The Sneaky (Starts moving immediately but slowly, then retreats fast)
+  {800, 4, 60},   // 4: The Dramatic (Wait, strike fast, retreat very slowly)
+  {200, 10, 15}   // 5: The Fake-Out (Logic handled separately in loop)
+};
+
+// Current active variability values
+int reactionDelay = 0;
+int attackSpeed = 10;
+int retreatSpeed = 15;
+
+// Volatile variables for interrupts
 volatile bool switchChanged = false;
 volatile int currentTargetState = HIGH;
 
 void IRAM_ATTR handleSwitchInterrupt() {
-  // Read the physical pin state
   currentTargetState = digitalRead(switchPin);
-  // Signal the main loop that we need to change direction
   switchChanged = true;
+}
+
+// Function to pick a personality profile
+void selectPersonality() {
+  currentProfileIndex = random(0, NUM_PROFILES);
+  
+  reactionDelay = profiles[currentProfileIndex][0];
+  attackSpeed   = profiles[currentProfileIndex][1];
+  retreatSpeed  = profiles[currentProfileIndex][2];
+  
+  Serial.print("Selected Profile #");
+  Serial.print(currentProfileIndex);
+  if (currentProfileIndex == 5) Serial.print(" [FAKE-OUT]");
+  Serial.print(" -> Delay: ");
+  Serial.print(reactionDelay);
+  Serial.print("ms, Attack: ");
+  Serial.print(attackSpeed);
+  Serial.print("ms, Retreat: ");
+  Serial.println(retreatSpeed);
 }
 
 void setup() {
   delay(500);
+  
+  // Seed the random number generator
+  randomSeed(analogRead(34)); 
   
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
@@ -33,40 +72,49 @@ void setup() {
   myservo.setPeriodHertz(50);
   myservo.attach(servoPin, 500, 2400);
   
-  // Set up the switch with a Pull-Up
   pinMode(switchPin, INPUT_PULLUP);
   
-  // Attach the interrupt to trigger on ANY change (Low to High or High to Low)
   attachInterrupt(digitalPinToInterrupt(switchPin), handleSwitchInterrupt, CHANGE);
 
   myservo.write(servoPositionDown);
   Serial.begin(115200);
-  Serial.println("Interrupt System Initialized.");
+  Serial.println("System Initialized with Fake-Out Logic.");
 }
 
 // Function to move the servo with "Interrupt Awareness"
-void moveServo(int start, int end, int stepDelay) {
-  // Prevent jitter if we are already at or very close to the destination
+bool moveServo(int start, int end, int stepDelay) {
   if (abs(start - end) <= 2) {
     myservo.write(end);
-    return;
+    return true;
   }
 
   int step = (start < end) ? 2 : -2;
   
   for (int p = start; (step > 0 ? p <= end : p >= end); p += step) {
-    // If the interrupt flag is set, we stop this movement immediately
     if (switchChanged) {
-      switchChanged = false; // Reset the flag
-      return; 
+      switchChanged = false;
+      return false; // Motion interrupted
     }
     
     myservo.write(p);
     delay(stepDelay);
   }
   
-  // Final set to target to ensure precision
   myservo.write(end);
+  return true; // Motion completed
+}
+
+// Helper to handle the reaction delay with interrupt check
+bool waitWithInterrupt(int ms) {
+  unsigned long start = millis();
+  while (millis() - start < ms) {
+    if (switchChanged) {
+      switchChanged = false;
+      return false; // Interrupted during delay
+    }
+    delay(10);
+  }
+  return true;
 }
 
 void loop() {
@@ -75,21 +123,44 @@ void loop() {
 
   // If the switch is ON (HIGH)
   if (currentState == HIGH) {
-    // Only move if we aren't already at the 'Up' position
     if (currentPos < servoPositionUp - 2) {
-      Serial.println("Switch is ON - Attacking");
-      moveServo(currentPos, servoPositionUp, 10);
+      selectPersonality();
+      
+      Serial.println("Switch is ON - Executing Profile...");
+      
+      // Standard initial delay for all profiles
+      if (!waitWithInterrupt(reactionDelay)) return;
+
+      // Special Logic for Profile 5 (The Fake-Out)
+      if (currentProfileIndex == 5) {
+        // 1. Move to 110
+        if (!moveServo(currentPos, 110, attackSpeed)) return;
+        
+        // 2. Wait for 3 seconds
+        if (!waitWithInterrupt(3000)) return;
+        
+        // 3. Move back to down position
+        if (!moveServo(110, servoPositionDown, 15)) return;
+        
+        // 4. Wait for 1 second
+        if (!waitWithInterrupt(1000)) return;
+        
+        // 5. Slowly move to the up position
+        moveServo(servoPositionDown, servoPositionUp, 60); 
+      } 
+      else {
+        // Standard profile behavior
+        moveServo(currentPos, servoPositionUp, attackSpeed);
+      }
     }
   } 
   // If the switch is OFF (LOW)
   else {
-    // Only move if we aren't already at the 'Down' position
     if (currentPos > servoPositionDown + 2) {
       Serial.println("Switch is OFF - Retracting");
-      moveServo(currentPos, servoPositionDown, 15);
+      moveServo(currentPos, servoPositionDown, retreatSpeed);
     }
   }
 
-  // Small delay to prevent the loop from hammering the CPU
   delay(20);
 }
